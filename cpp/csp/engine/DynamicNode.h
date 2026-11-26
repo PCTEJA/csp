@@ -45,6 +45,8 @@ private:
     void addDynamicInstance( const DialectGenericType & key );
     void removeDynamicInstance( const DialectGenericType & key );
 
+    void handleTriggerShapeChange( const DialectGenericType & key, bool added, int64_t elemId, int64_t replaceId );
+
     //All instance engines share a single CycleStepTable on the DynamicNode
     CycleStepTable m_cycleStepTable;
     InstanceMap    m_instanceMap;
@@ -56,8 +58,20 @@ private:
 
     std::vector<INOUT_ID_TYPE> m_snapIds; //temporary storage to make them passive
 
+    //Mirror of the trigger input basket's key -> elemId mapping, maintained from
+    //the basket's own change callback (see the constructor).  This is the mapping
+    //elemId() resolves against for csp.attach() wiring: unlike m_dynamicKeyMap
+    //below it follows the order shape events are applied to the trigger basket,
+    //so it stays correct when a removal and an addition land in the same cycle.
+    std::unordered_map<DialectGenericType,INOUT_ELEMID_TYPE> m_triggerKeyMap;
+    std::vector<DialectGenericType>                          m_triggerElemIdMap;
+
     //We may be able to remove this once we move key management into DynamicBasketInfo
-    //only need to maintain one per DynamicNode, since keys are always added/removed in lockstep
+    //Mirror of the dynamic OUTPUT basket's key -> elemId mapping.  Keys are added
+    //here when a dynamic instance is created and removed when the instance is
+    //destroyed after the cycle (see executeImpl), so this stays in lockstep with
+    //the output basket and provides the elemId removeDynamicInstance passes to it.
+    //It does NOT track the trigger input basket, which applies removals eagerly.
     std::unordered_map<DialectGenericType,INOUT_ELEMID_TYPE> m_dynamicKeyMap;
     std::vector<DialectGenericType>                          m_dynamicElemIdMap;
 };

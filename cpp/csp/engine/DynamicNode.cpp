@@ -18,6 +18,19 @@ DynamicNode::DynamicNode( Engine * engine, const std::string & name,
 {
     //input 0 is always the dynamic basket trigger, we can create that here
     initInputBasket( 0, 0, true );
+
+    //Track the trigger basket's own key -> elemId mapping from its change callback.
+    //The trigger basket applies shape changes (including removals) as soon as the
+    //trigger node outputs them, while this node defers removal of dynamic instances
+    //until after the cycle (see executeImpl).  The m_dynamicKeyMap mirror below
+    //therefore cannot resolve the elemId of a newly added key when a removal and
+    //an addition land in the same cycle - it would point at the slot the removal
+    //just vacated, which the basket has already nulled.  The trigger basket reports
+    //the authoritative elemId for every shape change, so mirror it here and use it
+    //for csp.attach() wiring in elemId().
+    static_cast<DynamicInputBasketInfo *>( inputBasket( 0 ) ) -> setChangeCallback(
+        [this]( const DialectGenericType & key, bool added, int64_t elemId, int64_t replaceId )
+        { handleTriggerShapeChange( key, added, elemId, replaceId ); } );
 }
 
 DynamicNode::~DynamicNode()
@@ -99,8 +112,37 @@ void DynamicNode::executeImpl()
 
 int64_t DynamicNode::elemId( const DialectGenericType & key )
 {
-    auto it = m_dynamicKeyMap.find( key );
-    return it == m_dynamicKeyMap.end() ? InputId::ELEM_ID_NONE : it -> second;
+    //NB: this must resolve against the trigger basket mirror, not m_dynamicKeyMap.
+    //See the constructor comment for why the two can disagree within a cycle.
+    auto it = m_triggerKeyMap.find( key );
+    return it == m_triggerKeyMap.end() ? InputId::ELEM_ID_NONE : it -> second;
+}
+
+void DynamicNode::handleTriggerShapeChange( const DialectGenericType & key, bool added, int64_t elemId, int64_t replaceId )
+{
+    if( added )
+    {
+        //keys are always appended to the end of the basket
+        CSP_ASSERT( elemId == ( int64_t ) m_triggerElemIdMap.size() );
+        m_triggerKeyMap[ key ] = elemId;
+        m_triggerElemIdMap.emplace_back( key );
+    }
+    else
+    {
+        auto it = m_triggerKeyMap.find( key );
+        CSP_ASSERT( it != m_triggerKeyMap.end() );
+
+        //removals compact the basket by moving the last element into the removed slot
+        if( replaceId != -1 )
+        {
+            auto replacedKey = m_triggerElemIdMap[ replaceId ];
+            m_triggerKeyMap[ replacedKey ] = elemId;
+            m_triggerElemIdMap[ elemId ] = replacedKey;
+        }
+
+        m_triggerKeyMap.erase( it );
+        m_triggerElemIdMap.pop_back();
+    }
 }
 
 void DynamicNode::addDynamicInstance( const DialectGenericType & key )

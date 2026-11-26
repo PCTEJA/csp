@@ -376,6 +376,82 @@ class TestDynamic(unittest.TestCase):
             for tick in v:
                 self.assertEqual(tick[1].key, k)
 
+    def test_dynamic_same_cycle_remove_add(self):
+        # https://github.com/Point72/csp/issues/775
+        # A trigger basket that removes one key and adds another in the same engine
+        # cycle segfaulted when consumed by csp.dynamic with csp.attach(): the
+        # dynamic node resolved the new key's basket index from a mirror that had
+        # not yet applied the removal, so the attached edge pointed at a null slot.
+        @csp.node
+        def alternating_key(x: ts[int]) -> csp.DynamicBasket[bool, int]:
+            with csp.state():
+                s_prev = None
+            if csp.ticked(x):
+                key = bool(x & 1)
+                if s_prev is not None and s_prev != key:
+                    csp.remove_dynamic_key(s_prev)
+                s_prev = key
+                csp.output({key: x})
+
+        @csp.graph
+        def cell(key: bool, v: ts[int]) -> ts[int]:
+            return v + 1
+
+        @csp.node
+        def first_value(xs: csp.DynamicBasket[bool, int]) -> ts[int]:
+            if csp.ticked(xs):
+                out = None
+                for _, v in xs.tickeditems():
+                    out = v
+                return out
+
+        def g():
+            x = csp.count(csp.timer(timedelta(microseconds=1), True))
+            out = csp.dynamic(alternating_key(x), cell, csp.snapkey(), csp.attach())
+            csp.add_graph_output("o", first_value(out))
+
+        start = datetime(2020, 1, 1)
+        res = csp.run(g, starttime=start, endtime=start + timedelta(microseconds=10))
+        self.assertEqual([v for _, v in res["o"]], list(range(2, 12)))
+
+    def test_dynamic_same_cycle_remove_add_older_key(self):
+        # Same shape as test_dynamic_same_cycle_remove_add, but the removed key was
+        # added two cycles earlier, so the removal compacts a basket with more than
+        # one live key (Point72/csp#775, same_cycle_remove_add_older_key variant).
+        @csp.node
+        def rotating_key(x: ts[int]) -> csp.DynamicBasket[int, int]:
+            with csp.state():
+                s_prev = None
+                s_prev2 = None
+            if csp.ticked(x):
+                key = x % 3
+                if s_prev2 is not None and s_prev2 != key:
+                    csp.remove_dynamic_key(s_prev2)
+                s_prev2 = s_prev
+                s_prev = key
+                csp.output({key: x})
+
+        @csp.graph
+        def cell(key: int, v: ts[int]) -> ts[int]:
+            return v + 1
+
+        @csp.node
+        def first_value(xs: csp.DynamicBasket[int, int]) -> ts[int]:
+            if csp.ticked(xs):
+                out = None
+                for _, v in xs.tickeditems():
+                    out = v
+                return out
+
+        def g():
+            x = csp.count(csp.timer(timedelta(microseconds=1), True))
+            out = csp.dynamic(rotating_key(x), cell, csp.snapkey(), csp.attach())
+            csp.add_graph_output("o", first_value(out))
+
+        start = datetime(2020, 1, 1)
+        res = csp.run(g, starttime=start, endtime=start + timedelta(microseconds=10))
+        self.assertEqual([v for _, v in res["o"]], list(range(2, 12)))
+
     def test_nested_dynamics(self):
         @csp.graph
         def dyn_graph_inner(parent_key: str, key: str, x: ts[int]) -> ts[DynData]:
